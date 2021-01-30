@@ -1,42 +1,92 @@
-version: '3'
+version: '3.8'
 
 services:
-  influxdb:
-    image: influxdb
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus:/etc/prometheus
+    command: "--config.file=/etc/prometheus/prometheus.yaml"
     ports:
-      - 8083:8083
-      - 8086:8086
+      - 9090:9090
+    restart: always
+
+  influxdb-for-telegraf:
+    image: influxdb:latest
     environment:
       - INFLUXDB_DB=telegraf
-      - INFLUXDB_USER=telegraf
-      - INFLUXDB_USER_PASSWORD=telegraf
+      - INFLUXDB_ADMIN_USER=${INFLUXDB_ADMIN_USER}
+      - INFLUXDB_ADMIN_PASSWORD=${INFLUXDB_ADMIN_PASSWORD}
     volumes:
-      - ./influxdb:/var/lib/influxdb
-  
+      - influxdb-for-telegraf-storage:/var/lib/influxdb
+    restart: always
+
+  influxdb-for-chronograf:
+    image: influxdb:latest
+    volumes:
+      - influxdb-for-chronograf-storage:/var/lib/influxdb
+    environment:
+      - INFLUXDB_DB=unifi
+      - INFLUXDB_ADMIN_USER=${INFLUXDB_ADMIN_USER}
+      - INFLUXDB_ADMIN_PASSWORD=${INFLUXDB_ADMIN_PASSWORD}
     restart: always
 
   telegraf:
-    image: telegraf
+    image: telegraf:latest
     restart: always
     ports:
       - 8125:8125
       - 8094:8094
       - 162:162/udp
       - 8092:8092/udp
-    links:
-      - influxdb
+    depends_on:
+      - influxdb-for-telegraf
     volumes:
       - ./mibs/:/usr/share/snmp/mibs/
-      - ./telegraf.conf:/etc/telegraf/telegraf.conf
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf
+
+  chronograf:
+    image: chronograf:latest
+    restart: always
+    volumes:
+      - chronograf-storage:/var/lib/chronograf
+    depends_on:
+      - influxdb-for-chronograf
+    environment:
+      - INFLUXDB_URL=http://influxdb-for-chronograf:8086
+      - INFLUXDB_USERNAME=${INFLUXDB_ADMIN_USER}
+      - INFLUXDB_PASSWORD=${INFLUXDB_ADMIN_PASSWORD}
+
+  unifi-poller:
+    restart: always
+    image: golift/unifi-poller:latest
+    environment:
+      - UP_INFLUXDB_DB=unifi
+      - UP_INFLUXDB_USER=${INFLUXDB_ADMIN_USER}
+      - UP_INFLUXDB_PASS=${INFLUXDB_ADMIN_PASSWORD}
+      - UP_INFLUXDB_URL=http://influxdb-for-chronograf:8086
+      - UP_UNIFI_DEFAULT_USER=${UNIFI_USER}
+      - UP_UNIFI_DEFAULT_PASS=${UNIFI_PASS}
+      - UP_UNIFI_DEFAULT_URL=${UNIFI_URL}
+      - UP_POLLER_DEBUG=${POLLER_DEBUG}
+      - UP_UNIFI_DEFAULT_SAVE_DPI=${POLLER_SAVE_DPI}
 
   grafana:
-    image: grafana/grafana
+    image: grafana/grafana:latest
     restart: always
     ports:
       - 3000:3000
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
-    links:
-      - influxdb
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,natel-discrete-panel,grafana-piechart-panel
+    depends_on:
+      - influxdb-for-telegraf
+      - influxdb-for-chronograf
+      - prometheus
     volumes:
       - ./grafana:/var/lib/grafana
+
+volumes:
+  influxdb-for-telegraf-storage:
+  influxdb-for-chronograf-storage:
+  chronograf-storage:
